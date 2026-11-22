@@ -134,3 +134,18 @@ body.lib #app { grid-template-columns: 1fr; grid-template-areas: "text"; }
 .login { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; align-items: center; justify-content: center; }
 .login div { max-width: 420px; padding: 0 16px; text-align: center; font-family: var(--sans); line-height: 1.7; }
 .login button { height: 40px; padding: 0 18px; margin-top: 8px; }
+.library form.find { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.library form.find input { flex: 1; min-width: 0; height: 36px; padding: 0 8px; font-size: 16px; }  /* 16px 未満だと iPhone が入力時に拡大する */
+.library form.find > button { height: 36px; padding: 0 12px; }
+.library form.find > div { flex-basis: 100%; }
+.library form.find > div:empty { display: none; }
+.library form.find .note { font-size: 12.5px; color: var(--muted); }
+.library form.find .sug, .library form.find .recent { display: flex; flex-wrap: wrap; gap: 6px; }
+.library form.find .sug button, .library form.find .recent button { height: auto; padding: 3px 8px; font-size: 13px; text-align: left; }
+.library form.find .recent .h { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
+.library form.find .n { font-size: 12px; color: var(--muted); }
+.library form.find .sum { font-size: 14px; margin: 4px 0; }
+.library form.find details { border-top: 1px solid var(--line); padding: 6px 0; }
+.library form.find summary { cursor: pointer; font-size: 14.5px; line-height: 1.5; }
+.library form.find a.hit { display: block; padding: 6px 0 6px 14px; font-size: 13.5px; line-height: 1.6; color: var(--fg); text-decoration: none; border-bottom: 1px dotted var(--line); }
+mark { background: var(--mark); color: inherit; border-radius: 2px; }

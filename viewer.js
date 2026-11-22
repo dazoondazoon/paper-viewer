@@ -180,9 +180,194 @@ async function addPaper(input) {
   return `追加しました：${id}（自宅PCが処理すると一覧に出ます）`;
 }
 
+// ---------- 論文の中の検索：単語リスト（terms.js）の語はその場で探し、それ以外は Drive の Papers/search 経由で自宅PCに頼む（plan/search_spec.md） ----------
+// 照らし合わせ方は search_spec.md のとおり（自宅PCの検索係・単語リストと同じ規則）
+function termRe(t) {
+  const e = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!/^[\x00-\x7f]+$/.test(t)) return new RegExp(e, "g");
+  const lower = !/[A-Z]/.test(t);
+  return new RegExp(`(?<![A-Za-z0-9])${e}${lower ? "(?:e?s)?" : ""}(?![A-Za-z0-9])`, lower ? "gi" : "g");
+}
+const parseQuery = (q) => [...q.matchAll(/"([^"]+)"|(\S+)/g)].map((m) => (m[1] || m[2]).trim()).filter(Boolean);
+function markHtml(text, res) {
+  const rs = [];
+  // matchAll は lastIndex の位置から探すので、snippet の exec で進んだ位置を戻す
+  for (const r of res) { r.lastIndex = 0; for (const m of text.matchAll(r)) if (m[0]) rs.push([m.index, m.index + m[0].length]); }
+  rs.sort((a, b) => a[0] - b[0]);
+  let out = "", at = 0;
+  for (const [s, e] of rs) { if (s < at) continue; out += esc(text.slice(at, s)) + "<mark>" + esc(text.slice(s, e)) + "</mark>"; at = e; }
+  return out + esc(text.slice(at));
+}
+// 訳と原文のうち、読む言葉の側で当たればそちらを、当たらなければもう一方を、当たった所の前後だけ出す
+function snippet(ja, en, res) {
+  const texts = lang === "ja" ? [ja, en] : [en, ja];
+  let text = texts.find((t) => t && res.some((r) => { r.lastIndex = 0; return r.test(t); })) || texts.find(Boolean) || "";
+  let i = 0;
+  for (const r of res) { r.lastIndex = 0; const m = r.exec(text); if (m) { i = m.index; break; } }
+  const s = Math.max(0, i - 40), part = text.slice(s, s + 160);
+  return (s ? "…" : "") + markHtml(part, res) + (s + 160 < text.length ? "…" : "");
+}
+const hitLink = (pid, block, terms) => `?p=${encodeURIComponent(pid)}&b=${encodeURIComponent(block)}&hl=${encodeURIComponent(terms.join("|"))}`;
+
+let TERMS = null;
+async function loadTerms() {
+  if (!ON_DRIVE) { await loadScript("terms.js"); return window.TERMS; }
+  await driveData(null, "library.js");  // viewerDir を決める（一覧で読み済みなら Drive には問い合わせない）
+  const f = (await (await drive(`${API}?fields=files(id,modifiedTime)&q=${encodeURIComponent(`name='terms.js' and ${quote(viewerDir)} in parents and trashed=false`)}`)).json()).files[0];
+  if (!f) return null;
+  // 数MB あるので、自宅PCが作り直したときだけ読み直す（入らなければ毎回読む）
+  const c = store.get("terms", null);
+  if (c && c.t === f.modifiedTime) return c.data;
+  const t = await (await drive(`${API}/${f.id}?alt=media`)).text();
+  const data = JSON.parse(t.slice(t.indexOf("=") + 1).trim().replace(/;$/, ""));
+  store.set("terms", { t: f.modifiedTime, data });
+  return data;
+}
+// 単語リストの語のうち、入れた語と同じもの。英語の語は search_spec.md の規則（小文字だけの語は大文字・小文字を区別しない）
+function findTerm(q) {
+  return TERMS.terms.find((t) => (t.en && (t.en === q || !/[A-Z]/.test(t.en) && t.en === q.toLowerCase())) || t.ja.includes(q));
+}
+function suggest(q) {
+  const l = q.toLowerCase();
+  return TERMS.terms.filter((t) => (t.en && t.en.toLowerCase().startsWith(l)) || t.ja.some((j) => j.startsWith(q))).sort((a, b) => b.n - a.n).slice(0, 8);
+}
+
+const paperCache = {};
+function paperText(pid) {
+  return paperCache[pid] || (paperCache[pid] = load(pid, "paper_data.js", "PAPER_DATA").then(({ data }) => {
+    const out = {};
+    for (const b of data.blocks) if (b.type === "para") out[b.id] = [strip(b.ja || ""), strip(b.en || "")];
+    for (const f of data.figures) out[f.id] = [strip((f.title_ja || "") + " " + (f.caption_ja || "")), strip((f.title_en || "") + " " + (f.caption_en || ""))];
+    return out;
+  }));
+}
+function showTerm(res, t, titles) {
+  const forms = [t.en, ...t.ja].filter(Boolean), re = forms.map(termRe);
+  const byPaper = new Map();
+  for (const [i, b, n] of t.hits) { const k = TERMS.papers[i]; if (!byPaper.has(k)) byPaper.set(k, []); byPaper.get(k).push([b, n]); }
+  res.innerHTML = `<div class="sum"><b>${esc(forms.join("／"))}</b> ${t.n} 回・${byPaper.size} 本（単語リスト）</div>`
+    + [...byPaper].map(([pid, hs]) => `<details data-pid="${esc(pid)}"><summary>${titles[pid] || esc(pid)} <span class="n">${hs.reduce((s, h) => s + h[1], 0)} 回・${hs.length} 段落</span></summary><div class="hits">読み込み中…</div></details>`).join("");
+  res.querySelectorAll("details").forEach((d) => d.addEventListener("toggle", () => {
+    if (!d.open || d.dataset.done) return;
+    d.dataset.done = 1;
+    const pid = d.dataset.pid;
+    paperText(pid).then((txt) => {
+      d.querySelector(".hits").innerHTML = byPaper.get(pid).map(([b]) => `<a class="hit" href="${hitLink(pid, b, forms)}">${txt[b] ? snippet(txt[b][0], txt[b][1], re) : esc(b)}</a>`).join("");
+    }, (e) => { d.querySelector(".hits").textContent = "読めません：" + e.message; });
+  }));
+}
+function showResult(res, r, titles) {
+  if (r.state !== "done") return (res.innerHTML = `<div class="sum">失敗：${esc(r.message)}</div>`);
+  const terms = r.mode === "word" ? parseQuery(r.q) : [], re = terms.map(termRe);
+  const byPaper = new Map();
+  for (const h of r.hits) { if (!byPaper.has(h.paper)) byPaper.set(h.paper, []); byPaper.get(h.paper).push(h); }
+  res.innerHTML = `<div class="sum"><b>${esc(r.q)}</b>（${r.mode === "word" ? `単語：${r.total} 段落${r.total > r.hits.length ? `、先頭の ${r.hits.length} 件` : ""}` : "意味：似ている順"}・自宅PCで ${r.took_s} 秒）</div>`
+    + [...byPaper].map(([pid, hs]) => `<details open><summary>${titles[pid] || esc(hs[0].title || pid)} <span class="n">${hs.length} 段落</span></summary><div class="hits">`
+      + hs.map((h) => `<a class="hit" href="${hitLink(pid, h.block, terms)}">${r.mode === "meaning" ? `<span class="n">${h.score.toFixed(2)}</span> ` : ""}${snippet(h.ja, h.en, re)}</a>`).join("") + "</div></details>").join("");
+}
+
+// ビューアの権限（drive.file）では自分の作ったフォルダにしか書けないので、拡張の作った Papers（inbox を持つほう）の下に search を作る
+let searchDir = null;
+async function searchFolder(create) {
+  if (searchDir) return searchDir;
+  const papers = await files(`name='Papers' and 'root' in parents and mimeType='application/vnd.google-apps.folder'`);
+  let parent = null;
+  for (const p of papers) if ((await files(`name='inbox' and ${quote(p.id)} in parents`)).length) { parent = p.id; break; }
+  if (!parent) throw new Error("Drive に Papers/inbox がありません（Mac の拡張で一度保存すると作られます）");
+  const f = (await files(`name='search' and ${quote(parent)} in parents and mimeType='application/vnd.google-apps.folder'`))[0];
+  if (f || !create) return (searchDir = f ? f.id : null);
+  return (searchDir = (await (await drive(API, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "search", mimeType: "application/vnd.google-apps.folder", parents: [parent] }) })).json()).id);
+}
+async function askPc(q, mode) {
+  const dir = await searchFolder(true);
+  const qid = Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+  const b = "search" + Date.now();
+  await drive(UPLOAD + "?uploadType=multipart", { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + b },
+    body: `--${b}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ name: qid + ".json", parents: [dir] })}\r\n`
+      + `--${b}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ q, mode, at: new Date().toISOString(), from: "viewer" })}\r\n--${b}--` });
+  return qid;
+}
+async function recentSearches() {
+  const dir = await searchFolder(false);
+  if (!dir) return [];
+  const fs = await files(`${quote(dir)} in parents`);
+  const ids = Object.fromEntries(fs.map((f) => [f.name, f.id]));
+  const qs = fs.map((f) => f.name).filter((n) => /^\d+-[a-z0-9]+\.json$/.test(n)).sort().reverse().slice(0, 10);
+  return Promise.all(qs.map(async (n) => {
+    const qid = n.slice(0, -5), rid = ids[qid + ".result.json"];
+    return { qid, done: !!rid, data: await (await drive(`${API}/${rid || ids[n]}?alt=media`)).json() };
+  }));
+}
+
+function renderFind(box, items) {
+  const titles = Object.fromEntries(items.map((it) => [it.id, it.title_ja || it.title_en]));
+  box.insertAdjacentHTML("beforeend", `<form class="find"><input type="search" placeholder="論文の中を検索（英語・日本語）" autocapitalize="off" autocorrect="off">
+    <button data-mode="word">単語</button><button data-mode="meaning">意味</button>
+    <div class="note">単語リストを読んでいます…</div><div class="sug"></div><div class="res"></div><div class="recent"></div></form>`);
+  const f = box.querySelector("form.find"), input = f.querySelector("input"), res = f.querySelector(".res"), note = f.querySelector(".note");
+  loadTerms().then((t) => {
+    TERMS = t;
+    note.textContent = t ? `単語リストの ${t.terms.length} 語は、入れるとすぐに出ます。ほかの語・文は「単語」「意味」で自宅PCが探します（数分）` : "単語リストはまだありません（自宅PCが作ります）";
+  }, () => { note.textContent = "単語リストを読めません。「単語」「意味」で自宅PCが探します"; });
+  if (!ON_DRIVE) f.querySelectorAll("button").forEach((b) => { b.disabled = true; b.title = "自宅PCでの検索は、GitHub Pages のビューアから"; });
+  let timer;
+  input.oninput = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const q = input.value.trim(), sug = f.querySelector(".sug");
+      sug.innerHTML = "";
+      if (!q || !TERMS) return;
+      const t = parseQuery(q).length === 1 && findTerm(parseQuery(q)[0]);
+      if (t) return showTerm(res, t, titles);
+      sug.innerHTML = suggest(q).map((t) => `<button type="button" data-q="${esc(t.en || t.ja[0])}">${esc([t.en, ...t.ja].filter(Boolean).join("／"))} <span class="n">${t.n}</span></button>`).join("");
+    }, 200);
+  };
+  f.querySelector(".sug").onclick = (e) => { const b = e.target.closest("button"); if (b) { input.value = b.dataset.q; input.oninput(); } };
+  const showRecent = () => recentSearches().then((rs) => {
+    const r = f.querySelector(".recent");
+    r.innerHTML = rs.length ? "<div class=\"h\">最近の検索（自宅PC）</div>" + rs.map((x, i) => `<button type="button" data-i="${i}">${x.data.mode === "meaning" ? "意味" : "単語"}｜${esc(x.data.q)} <span class="n">${!x.done ? "検索中…" : x.data.state === "done" ? (x.data.mode === "word" ? x.data.total + " 段落" : x.data.hits.length + " 件") : "失敗"}</span></button>`).join("") : "";
+    r.onclick = (e) => { const b = e.target.closest("button"); if (b && rs[b.dataset.i].done) showResult(res, rs[b.dataset.i].data, titles); };
+    return rs;
+  }, () => []);
+  if (ON_DRIVE) showRecent();
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const mode = e.submitter?.dataset.mode || "word", q = input.value.trim();
+    if (!q) return;
+    res.innerHTML = `<div class="sum">自宅PCに頼んでいます…</div>`;
+    try {
+      const qid = await askPc(q, mode);
+      res.innerHTML = `<div class="sum">自宅PCが探しています（Drive の同期を挟むので数分かかります。閉じても後で「最近の検索」から見られます）</div>`;
+      showRecent();
+      const started = Date.now();
+      const poll = async () => {
+        const r = (await showRecent()).find((x) => x.qid === qid);
+        if (r && r.done) return showResult(res, r.data, titles);
+        if (Date.now() - started < 30 * 60e3) setTimeout(poll, 15e3);  // 自宅PCが翻訳中でも検索係は別に動くので、30分で来なければ自宅PCが止まっている
+        else res.innerHTML = `<div class="sum">30分たっても結果がありません。自宅PCが動いているかを確かめてください</div>`;
+      };
+      setTimeout(poll, 15e3);
+    } catch (err) { res.innerHTML = `<div class="sum">失敗：${esc(err.message)}</div>`; }
+  };
+}
+
 let P, figs = [], list = [], cur = 0, filter = "all";
 let lang = store.get("lang", "ja"), follow = store.get("follow", true);
 const flipped = new Set();
+const hitBlock = params.get("b"), hlRes = (params.get("hl") || "").split("|").filter(Boolean).map(termRe);
+// 検索した語に印を付ける。タグをまたぐ語（<i>Ndc</i>80 など）には付かない
+function markText(el) {
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), ns = [];
+  while (w.nextNode()) ns.push(w.currentNode);
+  for (const n of ns) {
+    const h = markHtml(n.data, hlRes);
+    if (!h.includes("<mark>")) continue;
+    const s = document.createElement("span");
+    s.innerHTML = h;
+    n.replaceWith(...s.childNodes);
+  }
+}
 
 async function main() {
   try {
@@ -212,7 +397,15 @@ async function main() {
   setupSplit();
   setupControls();
   const pos = store.get("pos:" + paperId, 0);
-  requestAnimationFrame(() => { $("#text").scrollTop = pos; });
+  // 検索の結果から開いたときは、当たったブロックへ動かす（図の説明で当たったときは図の欄にその図を出す）
+  const hit = hitBlock && document.getElementById(hitBlock);
+  if (hitBlock && figById(hitBlock)) showFigById(hitBlock, true);
+  requestAnimationFrame(() => {
+    if (!hit) return ($("#text").scrollTop = pos);
+    scrollInto($("#text"), hit, true);
+    hit.classList.add("flash");
+    setTimeout(() => hit.classList.remove("flash"), 2000);
+  });
 }
 
 function strip(h) { const d = document.createElement("div"); d.innerHTML = h; return d.textContent; }
@@ -223,6 +416,7 @@ function renderLibrary(items, waiting) {
   $("#bar-title").textContent = `論文一覧（${items.length} 本）`;
   const box = document.createElement("div");
   box.className = "library";
+  renderFind(box, items);
   if (ON_DRIVE) {  // Mac で同期フォルダから開いたとき（file://）は Drive に書けないので、追加は拡張で行う
     box.insertAdjacentHTML("beforeend", `<form class="add"><input type="text" placeholder="論文の URL・DOI" autocapitalize="off" autocorrect="off">
       <button>追加</button><div class="msg"></div></form>`);
@@ -361,6 +555,7 @@ function paintPara(p) {
   p.innerHTML = t ? tableHtml(t, want === "ja") : want === "ja" ? b.ja : b.en;
   p.classList.toggle("en-shown", want === "en");
   p.classList.toggle("untranslated", untranslated && lang === "ja");
+  if (hlRes.length) markText(p);
 }
 function paintSupp(d) {
   const s = P.supp.find((x) => "supp-" + x.id === d.id);
