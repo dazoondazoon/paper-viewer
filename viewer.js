@@ -7,6 +7,11 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 保存できなくても表示は続ける */ } },
 };
 const isPortrait = () => matchMedia("(max-width: 899px) and (orientation: portrait)").matches;
+// scrollIntoView は iPhone で画面全体まで動かし、上のボタンが画面の外に出て押せなくなるので、欄の中だけを動かす
+function scrollInto(box, el, center) {
+  const d = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+  box.scrollTop += center ? d - (box.clientHeight - el.offsetHeight) / 2 : d;
+}
 
 // file:// でも動くよう、データは fetch ではなく <script> で読む
 function loadScript(src) {
@@ -184,7 +189,8 @@ function renderText() {
       el.innerHTML = b.ja || b.en;
       const a = document.createElement("a");
       a.className = "l" + Math.min(b.level, 3); a.innerHTML = el.innerHTML; a.href = "#" + b.id;
-      a.onclick = (e) => { e.preventDefault(); el.scrollIntoView({ block: "start" }); document.body.classList.remove("toc-open"); };
+      // 目次を先に閉じる。閉じると本文の幅が広がって行が組み直されるので、後に閉じると横持ちの iPhone で行き過ぎる
+      a.onclick = (e) => { e.preventDefault(); document.body.classList.remove("toc-open"); scrollInto($("#text"), el); };
       toc.appendChild(a);
     } else if (b.type === "para") {
       el = document.createElement("p");
@@ -352,7 +358,7 @@ function toggleMenu(open) {
       <span class="l">${f.kind === "video" ? "▶ " : ""}${esc(shortLabel(f.label))}</span><span class="d">${f.title_ja || f.title_en || ""}</span></button>`).join("") + "</div>";
   m.hidden = false;
   const c = m.querySelector(".it.cur");
-  if (c) c.scrollIntoView({ block: "center" });
+  if (c) scrollInto(m, c, true);
 }
 function markCurrentRefs() {
   const id = list[cur] && list[cur].id;
@@ -369,7 +375,7 @@ function gotoMention() {
   const p = ps[refCursor];
   const wasFollow = follow;
   follow = false;  // 移動中に自動追従で別の図へ切り替わらないようにする
-  p.scrollIntoView({ block: "center" });
+  scrollInto($("#text"), p, true);
   setTimeout(() => { follow = wasFollow; }, 800);
   p.classList.add("flash");
   setTimeout(() => p.classList.remove("flash"), 1200);
