@@ -155,6 +155,7 @@ function toDoi(input) {
   let m;
   if ((m = s.match(/elifesciences\.org\/(?:articles|reviewed-preprints)\/(\d+)/))) return "10.7554/eLife." + m[1];
   if ((m = s.match(/nature\.com\/articles\/([^/?#.]+)/))) return "10.1038/" + m[1];
+  if ((m = s.match(/arxiv\.org\/(?:abs|pdf|html)\/(\d{4}\.\d{4,5})/))) return "10.48550/arXiv." + m[1];
   if ((m = s.match(/biorxiv\.org\/content\/(10\.\d+\/[^?#]+?)(?:v\d+)?(?:\.full.*|\.abstract|\/)?(?:[?#].*)?$/))) return m[1];
   m = s.match(/10\.\d{4,9}\/[^\s?#]+/);
   return m ? m[0] : null;
@@ -162,8 +163,6 @@ function toDoi(input) {
 async function addPaper(input) {
   const doi = toDoi(input);
   if (!doi) throw new Error("URL・DOI から DOI を読めません");
-  // 自宅PCが取れるのは3誌だけ。ほかの雑誌は Mac の拡張でページを保存しても、今は変換できない
-  if (!API_ONLY.test(doi) && !doi.startsWith("10.1038/")) throw new Error("eLife・bioRxiv・Nature 以外は追加できません");
   const id = doi.replaceAll("/", "_");  // パイプラインの論文ID と同じ
   const papers = await files(`name='Papers' and 'root' in parents and mimeType='application/vnd.google-apps.folder'`);
   const inbox = papers.length && (await files(`name='inbox' and (${papers.map((p) => quote(p.id) + " in parents").join(" or ")})`))[0];
@@ -171,8 +170,8 @@ async function addPaper(input) {
   if ((await files(`name=${quote(id)} and ${quote(inbox.id)} in parents`)).length) return "保存済み：" + id;
   const dir = (await (await drive(API, { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: id, mimeType: "application/vnd.google-apps.folder", parents: [inbox.id] }) })).json()).id;
-  const source = API_ONLY.test(doi) ? (doi.startsWith("10.7554/") ? "elife" : "biorxiv") : "html";
-  // Nature はページ無しで置く。自宅PCが公開のページを取り、購読が要れば「Mac で保存が必要」にする
+  const source = API_ONLY.test(doi) ? (doi.startsWith("10.7554/") ? "elife" : "biorxiv") : doi.startsWith("10.1038/") ? "html" : "pdf";
+  // Nature はページ無しで置く。自宅PCが公開のページを取り、購読が要れば「Mac で保存が必要」にする。3誌以外は自宅PCが本文を取れないので、必ず「Mac で PDF の保存が必要」になる
   const req = { doi, url: "https://doi.org/" + doi, title: null, journal: null, id, source, page: null, saved_at: new Date().toISOString(), from: "viewer" };
   const b = "paper" + Date.now();
   await drive(UPLOAD + "?uploadType=multipart", { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + b },
@@ -225,7 +224,7 @@ function renderLibrary(items, waiting) {
   const box = document.createElement("div");
   box.className = "library";
   if (ON_DRIVE) {  // Mac で同期フォルダから開いたとき（file://）は Drive に書けないので、追加は拡張で行う
-    box.insertAdjacentHTML("beforeend", `<form class="add"><input type="text" placeholder="論文の URL・DOI（eLife・bioRxiv・Nature）" autocapitalize="off" autocorrect="off">
+    box.insertAdjacentHTML("beforeend", `<form class="add"><input type="text" placeholder="論文の URL・DOI" autocapitalize="off" autocorrect="off">
       <button>追加</button><div class="msg"></div></form>`);
     const f = box.querySelector("form.add");
     f.querySelector("input").value = params.get("add") || "";  // iPhone の共有ボタンのショートカットが ?add= に URL を入れて開く
@@ -238,7 +237,7 @@ function renderLibrary(items, waiting) {
   }
   for (const w of waiting) {
     box.insertAdjacentHTML("beforeend", `<div class="item wait"><div class="t">${esc(w.title || w.doi)}</div>
-      <div class="s">Mac で保存が必要（購読の論文）：<a href="https://doi.org/${esc(w.doi)}" target="_blank" rel="noopener">論文を開く</a> → 拡張の「このページを保存」</div></div>`);
+      <div class="s">${w.need === "pdf" ? "Mac で PDF の保存が必要（3誌以外の雑誌）" : "Mac で保存が必要（購読の論文）"}：<a href="https://doi.org/${esc(w.doi)}" target="_blank" rel="noopener">論文を開く</a> → 拡張の「このページを保存」</div></div>`);
   }
   for (const it of items) {
     const a = document.createElement("a");
