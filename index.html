@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>論文ビューア</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header id="bar">
+  <button id="btn-toc" title="目次">☰</button>
+  <a id="btn-home" href="?" title="論文一覧">⌂</a>
+  <div id="bar-title"></div>
+  <button id="btn-lang" title="訳文と原文を切り替え">訳</button>
+  <button id="btn-follow" title="読んでいる段落の図を自動で表示">追従</button>
+</header>
+<div id="app">
+  <nav id="toc"></nav>
+  <main id="text"></main>
+  <div id="split" title="ドラッグで幅を変更"><span></span></div>
+  <section id="figpane">
+    <div id="fighead">
+      <div id="figtabs"></div>
+      <div id="fignav">
+        <button id="fig-prev" title="前の図（←）">‹</button>
+        <button id="fig-label" title="図の一覧（g）"></button>
+        <button id="fig-next" title="次の図（→）">›</button>
+        <button id="fig-out" title="縮小（-）">−</button>
+        <button id="fig-in" title="拡大（+）">＋</button>
+        <button id="fig-ref" title="この図に言及している段落へ">¶</button>
+        <button id="fig-full" title="全画面（f）">⤢</button>
+      </div>
+    </div>
+    <div id="stage"><div id="zoom"></div></div>
+    <div id="cap"></div>
+    <div id="figmenu" hidden></div>
+  </section>
+</div>
+<div id="pop" hidden></div>
+<script src="viewer.js"></script>
+</body>
+</html>
