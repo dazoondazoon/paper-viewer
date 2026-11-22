@@ -40,7 +40,8 @@ function login() {
     document.body.appendChild(box);
     // iPhone ではログインの窓はタップからしか開けないので、トークンが切れたときもボタンを押してもらう
     box.querySelector("button").onclick = () => google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID, scope: "https://www.googleapis.com/auth/drive.readonly",
+      // drive.file は論文を追加する（inbox に書く）ため。拡張と同じプロジェクトなので、拡張が作った Papers/inbox に書ける
+      client_id: CLIENT_ID, scope: "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file",
       callback: (r) => {
         box.remove(); loggingIn = null;
         if (r.error) return ng(new Error("ログインできません：" + r.error));
@@ -52,15 +53,17 @@ function login() {
   }));
 }
 
-async function drive(url) {
+async function drive(url, opts = {}, retry = true) {
   if (!token) await login();
-  const r = await fetch(url, { headers: { Authorization: "Bearer " + token } });
-  if (r.status === 401) {  // 1時間でトークンが切れた
+  const r = await fetch(url, { ...opts, headers: { ...opts.headers, Authorization: "Bearer " + token } });
+  const text = r.ok ? "" : await r.text();
+  // 401 は1時間でトークンが切れた。403 の insufficient は drive.file を足す前のトークンで書こうとした
+  if (r.status === 401 || r.status === 403 && /insufficient/i.test(text) && retry) {
     token = null;
     try { sessionStorage.removeItem("token"); } catch { /* 無視 */ }
-    return drive(url);
+    return drive(url, opts, r.status === 401);
   }
-  if (!r.ok) throw new Error(`Drive API ${r.status}：${await r.text()}`);
+  if (!r.ok) throw new Error(`Drive API ${r.status}：${text}`);
   return r;
 }
 async function files(q) {
@@ -97,7 +100,7 @@ async function load(dir, file, name) {
 }
 
 // 仮の src の付いた図・動画が画面に入ったら、Drive から取って差し替える（図は開いたときに裏ですべて取ってあるので、取り終えていればすぐ出る）
-const blobs = new Map(), sizes = {};
+const blobs = new Map(), sizes = {}, suppIds = {};
 function blobUrl(id) {
   if (!blobs.has(id)) blobs.set(id, drive(`${API}/${id}?alt=media`).then((r) => r.blob()).then((b) => URL.createObjectURL(b)));
   return blobs.get(id);
@@ -136,10 +139,46 @@ async function driveFigs(dir) {
   const ids = {};
   for (const f of await files(`${quote(await child("figures", dir))} in parents`)) { ids["figures/" + f.name] = f.id; sizes[f.id] = +f.size; }
   figs.forEach((f) => { if (ids[f.img]) f.src = DRIVE_SRC + ids[f.img]; if (ids[f.video]) f.vsrc = DRIVE_SRC + ids[f.video]; });
+  if ((P.supp || []).some((s) => s.file)) for (const f of await files(`${quote(await child("supp", dir))} in parents`)) suppIds["supp/" + f.name] = f.id;
   // 図（動画は表紙だけ）は、読み進めて出るのを待たずに論文の順にすべて取る。同時は3本までにして、いま図の欄に出す1枚の取得が後ろで待たされないようにする
   const queue = figs.filter((f) => f.src).map((f) => f.src.slice(DRIVE_SRC.length));
   const worker = async () => { while (queue.length) await blobUrl(queue.shift()).catch(() => {}); };
   for (let i = 0; i < 3; i++) worker();
+}
+
+// ---------- 論文の追加（iPhone から）：拡張と同じ形で Papers/inbox/{論文ID}/request.json を書く。処理は自宅PCの run_inbox.py ----------
+const UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
+const API_ONLY = /^10\.(7554|1101|64898)\//;  // eLife、bioRxiv。自宅PCが API で取る
+// 拡張の background.js の toDoi と同じ
+function toDoi(input) {
+  const s = decodeURIComponent(input.trim());
+  let m;
+  if ((m = s.match(/elifesciences\.org\/(?:articles|reviewed-preprints)\/(\d+)/))) return "10.7554/eLife." + m[1];
+  if ((m = s.match(/nature\.com\/articles\/([^/?#.]+)/))) return "10.1038/" + m[1];
+  if ((m = s.match(/biorxiv\.org\/content\/(10\.\d+\/[^?#]+?)(?:v\d+)?(?:\.full.*|\.abstract|\/)?(?:[?#].*)?$/))) return m[1];
+  m = s.match(/10\.\d{4,9}\/[^\s?#]+/);
+  return m ? m[0] : null;
+}
+async function addPaper(input) {
+  const doi = toDoi(input);
+  if (!doi) throw new Error("URL・DOI から DOI を読めません");
+  // 自宅PCが取れるのは3誌だけ。ほかの雑誌は Mac の拡張でページを保存しても、今は変換できない
+  if (!API_ONLY.test(doi) && !doi.startsWith("10.1038/")) throw new Error("eLife・bioRxiv・Nature 以外は追加できません");
+  const id = doi.replaceAll("/", "_");  // パイプラインの論文ID と同じ
+  const papers = await files(`name='Papers' and 'root' in parents and mimeType='application/vnd.google-apps.folder'`);
+  const inbox = papers.length && (await files(`name='inbox' and (${papers.map((p) => quote(p.id) + " in parents").join(" or ")})`))[0];
+  if (!inbox) throw new Error("Drive に Papers/inbox がありません（Mac の拡張で一度保存すると作られます）");
+  if ((await files(`name=${quote(id)} and ${quote(inbox.id)} in parents`)).length) return "保存済み：" + id;
+  const dir = (await (await drive(API, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: id, mimeType: "application/vnd.google-apps.folder", parents: [inbox.id] }) })).json()).id;
+  const source = API_ONLY.test(doi) ? (doi.startsWith("10.7554/") ? "elife" : "biorxiv") : "html";
+  // Nature はページ無しで置く。自宅PCが公開のページを取り、購読が要れば「Mac で保存が必要」にする
+  const req = { doi, url: "https://doi.org/" + doi, title: null, journal: null, id, source, page: null, saved_at: new Date().toISOString(), from: "viewer" };
+  const b = "paper" + Date.now();
+  await drive(UPLOAD + "?uploadType=multipart", { method: "POST", headers: { "Content-Type": "multipart/related; boundary=" + b },
+    body: `--${b}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ name: "request.json", parents: [dir] })}\r\n`
+      + `--${b}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(req, null, 1)}\r\n--${b}--` });
+  return `追加しました：${id}（自宅PCが処理すると一覧に出ます）`;
 }
 
 let P, figs = [], list = [], cur = 0, filter = "all";
@@ -149,7 +188,12 @@ const flipped = new Set();
 async function main() {
   try {
     if (ON_DRIVE) await loadScript("https://accounts.google.com/gsi/client");
-    if (!paperId) return renderLibrary((await load(null, "library.js", "LIBRARY")).data || []);
+    if (!paperId) {
+      const items = (await load(null, "library.js", "LIBRARY")).data || [];
+      // 保存待ちの一覧は自宅PCが mac_wait の論文があるときに書く。まだ一度も書かれていなければ無い
+      const waiting = await load(null, "waiting.js", "WAITING").then((r) => r.data || [], () => []);
+      return renderLibrary(items, waiting);
+    }
     const { parent, data } = await load(paperId, "paper_data.js", "PAPER_DATA");
     P = data;
     figs = P.figures;
@@ -175,11 +219,27 @@ async function main() {
 function strip(h) { const d = document.createElement("div"); d.innerHTML = h; return d.textContent; }
 
 // ---------- 論文一覧 ----------
-function renderLibrary(items) {
+function renderLibrary(items, waiting) {
   document.body.classList.add("lib");
   $("#bar-title").textContent = `論文一覧（${items.length} 本）`;
   const box = document.createElement("div");
   box.className = "library";
+  if (ON_DRIVE) {  // Mac で同期フォルダから開いたとき（file://）は Drive に書けないので、追加は拡張で行う
+    box.insertAdjacentHTML("beforeend", `<form class="add"><input type="text" placeholder="論文の URL・DOI（eLife・bioRxiv・Nature）" autocapitalize="off" autocorrect="off">
+      <button>追加</button><div class="msg"></div></form>`);
+    const f = box.querySelector("form.add");
+    f.querySelector("input").value = params.get("add") || "";  // iPhone の共有ボタンのショートカットが ?add= に URL を入れて開く
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      const msg = f.querySelector(".msg");
+      msg.textContent = "追加しています…";
+      addPaper(f.querySelector("input").value).then((m) => { msg.textContent = m; }, (err) => { msg.textContent = "失敗：" + err.message; });
+    };
+  }
+  for (const w of waiting) {
+    box.insertAdjacentHTML("beforeend", `<div class="item wait"><div class="t">${esc(w.title || w.doi)}</div>
+      <div class="s">Mac で保存が必要（購読の論文）：<a href="https://doi.org/${esc(w.doi)}" target="_blank" rel="noopener">論文を開く</a> → 拡張の「このページを保存」</div></div>`);
+  }
   for (const it of items) {
     const a = document.createElement("a");
     a.className = "item"; a.href = "?p=" + encodeURIComponent(it.id);
@@ -198,8 +258,10 @@ function renderText() {
     <div class="meta">${m.title_ja ? m.title_en + "<br>" : ""}${m.authors.join(", ")}<br>
     ${m.journal} ${m.year} ・ <a href="https://doi.org/${m.doi}" target="_blank">doi:${m.doi}</a></div>`;
   const toc = $("#toc");
+  let listed = false;
   for (const b of P.blocks) {
     let el;
+    if (b.supp && !listed) { suppList(art, toc); listed = true; }  // PDF から取り出した補足資料の中身は、補足資料の一覧の後に並べる
     if (b.type === "heading") {
       el = document.createElement(b.level <= 2 ? "h2" : "h3");
       el.innerHTML = b.ja || b.en;
@@ -222,6 +284,7 @@ function renderText() {
     el.id = b.id;
     art.appendChild(el);
   }
+  if (!listed) suppList(art, toc);
   if (P.refs.length) {
     art.insertAdjacentHTML("beforeend", "<h2>References</h2>");
     const ol = document.createElement("ol");
@@ -242,8 +305,10 @@ function renderText() {
     if (f) { e.preventDefault(); showFigById(f.dataset.fig, true); return; }
     const c = e.target.closest("a.cite");
     if (c) { e.preventDefault(); showRef(c.dataset.ref); return; }
+    const o = e.target.closest("a[data-file]");
+    if (o) { e.preventDefault(); openDrive(o.dataset.file); return; }
     if (e.target.closest("a")) return;
-    const p = e.target.closest("p[id], .tbl[id]");
+    const p = e.target.closest("p[id], .tbl[id], .supp[id]");
     if (p && !String(getSelection())) {  // 文字を選択しているときは切り替えない
       flipped.has(p.id) ? flipped.delete(p.id) : flipped.add(p.id);
       paintPara(p);
@@ -266,11 +331,29 @@ function renderText() {
   });
 }
 
+function suppList(art, toc) {
+  if (!P.supp || !P.supp.length) return;
+  // PDF は Drive に置いてある。zip などの元データは論文1本で100MB を超えることがあるので、元の場所へのリンクにしてある（fetch_supp.py）
+  const h = document.createElement("h2");
+  h.id = "supp"; h.textContent = "補足資料";
+  art.appendChild(h);
+  const a = document.createElement("a");
+  a.className = "l1"; a.textContent = "補足資料"; a.href = "#supp";
+  a.onclick = (e) => { e.preventDefault(); document.body.classList.remove("toc-open"); scrollInto($("#text"), h); };
+  toc.appendChild(a);
+  for (const s of P.supp) {
+    const d = document.createElement("div");
+    d.className = "supp"; d.id = "supp-" + s.id;
+    art.appendChild(d);
+  }
+}
+
 function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
 
 const blockById = () => P._byId || (P._byId = Object.fromEntries(P.blocks.map((b) => [b.id, b])));
 const figById = (id) => figs.find((f) => f.id === id);
 function paintPara(p) {
+  if (p.classList.contains("supp")) return paintSupp(p);
   const b = blockById()[p.id];
   const t = b.type === "table" ? figById(b.fig) : null;
   let want = flipped.has(p.id) ? (lang === "ja" ? "en" : "ja") : lang;
@@ -280,7 +363,27 @@ function paintPara(p) {
   p.classList.toggle("en-shown", want === "en");
   p.classList.toggle("untranslated", untranslated && lang === "ja");
 }
-function paintParas() { document.querySelectorAll("article p[id], article .tbl[id]").forEach(paintPara); markCurrentRefs(); }
+function paintSupp(d) {
+  const s = P.supp.find((x) => "supp-" + x.id === d.id);
+  let want = flipped.has(d.id) ? (lang === "ja" ? "en" : "ja") : lang;
+  const untranslated = want === "ja" && (s.title_en && !s.title_ja || s.caption_en && !s.caption_ja);
+  if (untranslated) want = "en";
+  const ja = want === "ja";
+  const ext = (s.file || s.url || "").split("?")[0].split(".").pop().toUpperCase();
+  const href = s.file ? (ON_DRIVE ? "#" : encodeURIComponent(paperId) + "/" + s.file) : s.url;
+  d.innerHTML = `<div class="t"><b>${s.label}</b> ${(ja ? s.title_ja : s.title_en) || ""}</div>`
+    + ((ja ? s.caption_ja : s.caption_en) || "").split("\n").map((x) => x && `<p>${x}</p>`).join("")
+    + (href ? `<a class="open" href="${esc(href)}" target="_blank" rel="noopener"${s.file && ON_DRIVE ? ` data-file="${esc(s.file)}"` : ""}>`
+      + `${s.file ? "開く" : "元の場所から取る"}（${ext}${s.size ? "・" + (s.size < 1e6 ? Math.ceil(s.size / 1e3) + " KB" : (s.size / 1e6).toFixed(1) + " MB") : ""}）</a>` : "");
+  d.classList.toggle("en-shown", !ja);
+  d.classList.toggle("untranslated", untranslated && lang === "ja");
+}
+// iPhone では、Drive から取り終えてから開く窓はポップアップとして止められるので、押したときに先に窓を開いておく
+function openDrive(file) {
+  const w = window.open("", "_blank");
+  blobUrl(suppIds[file]).then((u) => { w.location.href = u; }, () => { w.close(); alert("補足資料を読めません"); });
+}
+function paintParas() { document.querySelectorAll("article p[id], article .tbl[id], article .supp[id]").forEach(paintPara); markCurrentRefs(); }
 function tableHtml(t, ja) {
   const title = ja ? t.title_ja || t.title_en : t.title_en;
   const cap = ja ? t.caption_ja || t.caption_en : t.caption_en;

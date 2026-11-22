@@ -71,6 +71,8 @@ article .refs { font: 13px/1.6 var(--sans); padding-left: 1.4em; }
 #zoom .tblview th, #zoom .tblview td { border: 1px solid var(--line, #ccc); padding: 3px 6px; vertical-align: top; }
 article .tbl .t { font: 14px/1.5 var(--sans); margin-top: 1em; }
 article .tbl img { max-width: 100%; display: block; }
+article .supp { font: 14px/1.6 var(--sans); margin: 1em 0; }
+article .supp p { margin: .2em 0; }
 #cap { flex: none; max-height: 34%; overflow: auto; padding: 8px 12px 12px; border-top: 1px solid var(--line); font-size: 13.5px; line-height: 1.7; cursor: pointer; }
 #cap .t { font-weight: 600; margin-bottom: 2px; }
 #cap p { margin: 0 0 .5em; }
@@ -98,6 +100,12 @@ body.figfull #cap { max-height: 22%; }
 .library a.item { display: block; padding: 14px 4px; border-bottom: 1px solid var(--line); color: var(--fg); text-decoration: none; }
 .library .t { font-size: 16px; line-height: 1.5; }
 .library .s { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.library form.add { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.library form.add input { flex: 1; min-width: 0; height: 36px; padding: 0 8px; font-size: 16px; }  /* 16px 未満だと iPhone が入力時に拡大する */
+.library form.add button { height: 36px; padding: 0 16px; }
+.library form.add .msg { flex-basis: 100%; font-size: 13px; color: var(--muted); }
+.library form.add .msg:empty { display: none; }
+.library .wait { padding: 14px 4px; border-bottom: 1px solid var(--line); background: var(--panel); }
 body.lib #split, body.lib #figpane, body.lib #btn-lang, body.lib #btn-follow, body.lib #btn-toc { display: none; }
 body.lib #app { grid-template-columns: 1fr; grid-template-areas: "text"; }
 
