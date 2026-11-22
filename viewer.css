@@ -146,3 +146,7 @@ body.lib #app { grid-template-columns: 1fr; grid-template-areas: "text"; }
 .library form.find summary { cursor: pointer; font-size: 14.5px; line-height: 1.5; }
 .library form.find a.hit { display: block; padding: 6px 0 6px 14px; font-size: 13.5px; line-height: 1.6; color: var(--fg); text-decoration: none; border-bottom: 1px dotted var(--line); }
 mark { background: var(--mark); color: inherit; border-radius: 2px; }
+.library .tools { display: flex; gap: 8px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+.library .tools input { flex: 1; min-width: 0; height: 36px; padding: 0 8px; font-size: 16px; }
+.library select.sort { height: 36px; font-size: 16px; max-width: 100%; }  /* 16px 未満だと iPhone が選ぶときに拡大する */
+.library form.find .sum select.sort { height: 30px; margin-left: 4px; }

@@ -262,7 +262,8 @@ function showTerm(res, t, titles) {
   const byPaper = new Map();
   for (const [i, b, n] of t.hits) { const k = TERMS.papers[i]; if (!byPaper.has(k)) byPaper.set(k, []); byPaper.get(k).push([b, n]); }
   res.innerHTML = `<div class="sum"><b>${esc(forms.join("／"))}</b> ${t.n} 回・${byPaper.size} 本（単語リスト）</div>`
-    + [...byPaper].map(([pid, hs]) => `<details data-pid="${esc(pid)}"><summary>${titles[pid] || esc(pid)} <span class="n">${hs.reduce((s, h) => s + h[1], 0)} 回・${hs.length} 段落</span></summary><div class="hits">読み込み中…</div></details>`).join("");
+    + [...byPaper].map(([pid, hs]) => `<details data-pid="${esc(pid)}" data-n="${hs.reduce((s, h) => s + h[1], 0)}"><summary>${titles[pid] || esc(pid)} <span class="n">${hs.reduce((s, h) => s + h[1], 0)} 回・${hs.length} 段落</span></summary><div class="hits">読み込み中…</div></details>`).join("");
+  sortHits(res, "word");
   res.querySelectorAll("details").forEach((d) => d.addEventListener("toggle", () => {
     if (!d.open || d.dataset.done) return;
     d.dataset.done = 1;
@@ -278,8 +279,32 @@ function showResult(res, r, titles) {
   const byPaper = new Map();
   for (const h of r.hits) { if (!byPaper.has(h.paper)) byPaper.set(h.paper, []); byPaper.get(h.paper).push(h); }
   res.innerHTML = `<div class="sum"><b>${esc(r.q)}</b>（${r.mode === "word" ? `単語：${r.total} 段落${r.total > r.hits.length ? `、先頭の ${r.hits.length} 件` : ""}` : "意味：似ている順"}・自宅PCで ${r.took_s} 秒）</div>`
-    + [...byPaper].map(([pid, hs]) => `<details open><summary>${titles[pid] || esc(hs[0].title || pid)} <span class="n">${hs.length} 段落</span></summary><div class="hits">`
+    + [...byPaper].map(([pid, hs]) => `<details open data-pid="${esc(pid)}" data-n="${r.mode === "word" ? hs.reduce((s, h) => s + h.score, 0) : hs.length}"><summary>${titles[pid] || esc(hs[0].title || pid)} <span class="n">${hs.length} 段落</span></summary><div class="hits">`
       + hs.map((h) => `<a class="hit" href="${hitLink(pid, h.block, terms)}">${r.mode === "meaning" ? `<span class="n">${h.score.toFixed(2)}</span> ` : ""}${snippet(h.ja, h.en, re)}</a>`).join("") + "</div></details>").join("");
+  sortHits(res, r.mode);
+}
+
+// 並べ替え。題名・著者は読み（かな）のデータが無いので、文字の順で並べる
+const byText = (f) => (a, b) => f(a).localeCompare(f(b), "ja");
+const sortSelect = (sorts, key) => `<select class="sort">${Object.entries(sorts).map(([k, [l]]) => `<option value="${k}"${k === key ? " selected" : ""}>${l}</option>`).join("")}</select>`;
+let paperYear = {};  // 論文ID → 年（renderFind で一覧から作る）
+const HIT_SORT = {
+  best: ["似ている順", null],
+  new: ["年が新しい順", (a, b) => (paperYear[b.dataset.pid] || 0) - (paperYear[a.dataset.pid] || 0)],
+  old: ["年が古い順", (a, b) => (paperYear[a.dataset.pid] || 0) - (paperYear[b.dataset.pid] || 0)],
+  many: ["当たった数が多い順", (a, b) => b.dataset.n - a.dataset.n],
+  title: ["題名の順", byText((d) => d.querySelector("summary").textContent)],
+};
+// 論文ごとのまとまり（details）を並べ替える。論文の中の段落の順は変えない
+function sortHits(res, mode) {
+  const ds = [...res.querySelectorAll("details")];  // 届いた順（意味検索なら似ている順）
+  const sorts = Object.fromEntries(Object.entries(HIT_SORT).filter(([k]) => mode === "meaning" || k !== "best"));
+  const key = store.get("hitSort:" + mode, mode === "meaning" ? "best" : "new");
+  res.querySelector(".sum").insertAdjacentHTML("beforeend", " " + sortSelect(sorts, sorts[key] ? key : Object.keys(sorts)[0]));
+  const sel = res.querySelector(".sum select");
+  const apply = () => { const f = sorts[sel.value][1]; (f ? ds.slice().sort(f) : ds).forEach((d) => res.appendChild(d)); };
+  sel.onchange = () => { store.set("hitSort:" + mode, sel.value); apply(); };
+  apply();
 }
 
 // ビューアの権限（drive.file）では自分の作ったフォルダにしか書けないので、拡張の作った Papers（inbox を持つほう）の下に search を作る
@@ -318,6 +343,7 @@ async function recentSearches() {
 
 function renderFind(box, items) {
   const titles = Object.fromEntries(items.map((it) => [it.id, it.title_ja || it.title_en]));
+  paperYear = Object.fromEntries(items.map((it) => [it.id, it.year]));
   box.insertAdjacentHTML("beforeend", `<form class="find"><input type="search" placeholder="論文の中を検索（英語・日本語）" autocapitalize="off" autocorrect="off">
     <button data-mode="word">単語</button><button data-mode="meaning">意味</button>
     <div class="note">単語リストを読んでいます…</div><div class="sug"></div><div class="res"></div><div class="recent"></div></form>`);
@@ -448,15 +474,35 @@ function renderLibrary(items, waiting) {
     box.insertAdjacentHTML("beforeend", `<div class="item wait"><div class="t">${esc(w.title || w.doi)}</div>
       <div class="s">${w.need === "pdf" ? "Mac で PDF の保存が必要（3誌以外の雑誌）" : "Mac で保存が必要（購読の論文）"}：<a href="https://doi.org/${esc(w.doi)}" target="_blank" rel="noopener">論文を開く</a> → 拡張の「このページを保存」</div></div>`);
   }
-  for (const it of items) {
+  box.insertAdjacentHTML("beforeend", `<div class="tools"><input type="search" placeholder="一覧を絞り込む（題名・著者・雑誌・年）" autocapitalize="off" autocorrect="off">
+    ${sortSelect(LIB_SORT, LIB_SORT[store.get("libSort", "new")] ? store.get("libSort", "new") : "new")}</div><div class="list"></div>`);
+  const rows = items.map((it) => {
     const a = document.createElement("a");
     a.className = "item"; a.href = "?p=" + encodeURIComponent(it.id);
     a.innerHTML = `<div class="t">${it.title_ja || it.title_en}</div>
       <div class="s">${it.authors.join(", ")} — ${it.journal} ${it.year} ・ 図 ${it.n_figs} ・ 翻訳 ${Math.round(it.translated * 100)}%</div>`;
-    box.appendChild(a);
-  }
+    return { it, a, hay: [strip(it.title_ja || ""), strip(it.title_en), ...it.authors, it.journal, it.year].join(" ").toLowerCase() };
+  });
+  const list = box.querySelector(".list"), narrow = box.querySelector(".tools input"), sel = box.querySelector(".tools select");
+  const paint = () => {
+    const ws = narrow.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = rows.filter((r) => ws.every((w) => r.hay.includes(w))).sort((a, b) => LIB_SORT[sel.value][1](a.it, b.it));
+    list.replaceChildren(...shown.map((r) => r.a));
+    $("#bar-title").textContent = `論文一覧（${ws.length ? shown.length + " / " : ""}${items.length} 本）`;
+  };
+  narrow.oninput = paint;
+  sel.onchange = () => { store.set("libSort", sel.value); paint(); };
+  paint();
   $("#text").appendChild(box);
 }
+const LIB_SORT = {
+  new: ["年が新しい順", (a, b) => b.year - a.year],
+  old: ["年が古い順", (a, b) => a.year - b.year],
+  title: ["題名の順", byText((it) => strip(it.title_ja || it.title_en))],
+  journal: ["雑誌の順", byText((it) => it.journal)],
+  author: ["第一著者の順", byText((it) => it.authors[0] || "")],
+  done: ["翻訳の進んだ順", (a, b) => b.translated - a.translated],
+};
 
 // ---------- 本文 ----------
 function renderText() {
