@@ -383,13 +383,20 @@ function renderFind(box, items) {
       res.innerHTML = `<div class="sum">自宅PCが探しています（Drive の同期を挟むので数分かかります。閉じても後で「最近の検索」から見られます）</div>`;
       showRecent();
       const started = Date.now();
+      // 待つ間は結果のファイルがあるかだけを見る（問い合わせ1回。最近の検索の10件を毎回読むと1回に11回になる）。
+      // 結果は自宅PCの Drive の同期しだいで数十秒〜数分で来るので、最初の5分は3秒おき（Drive API の上限 毎分12,000回に比べて十分少ない）、その後は電池と通信を減らすため15秒おき
       const poll = async () => {
-        const r = (await showRecent()).find((x) => x.qid === qid);
-        if (r && r.done) return showResult(res, r.data, titles);
-        if (Date.now() - started < 30 * 60e3) setTimeout(poll, 15e3);  // 自宅PCが翻訳中でも検索係は別に動くので、30分で来なければ自宅PCが止まっている
+        try {
+          if ((await files(`name=${quote(qid + ".result.json")} and ${quote(await searchFolder(false))} in parents`)).length) {
+            const r = (await showRecent()).find((x) => x.qid === qid);
+            if (r && r.done) return showResult(res, r.data, titles);
+          }
+        } catch {}  // iPhone の通信が一時的に切れても待ち続ける
+        const t = Date.now() - started;
+        if (t < 30 * 60e3) setTimeout(poll, t < 5 * 60e3 ? 3e3 : 15e3);  // 自宅PCが翻訳中でも検索係は別に動くので、30分で来なければ自宅PCが止まっている
         else res.innerHTML = `<div class="sum">30分たっても結果がありません。自宅PCが動いているかを確かめてください</div>`;
       };
-      setTimeout(poll, 15e3);
+      setTimeout(poll, 3e3);
     } catch (err) { res.innerHTML = `<div class="sum">失敗：${esc(err.message)}</div>`; }
   };
 }
