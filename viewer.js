@@ -31,7 +31,7 @@ const CLIENT_ID = "864436920728-1mlldj31a498l8hkbnaaglumsb63gj6u.apps.googleuser
 const ON_DRIVE = location.protocol !== "file:";
 const API = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_SRC = "data:,drive:";  // 図の src に入れる仮の値。<img> には認証ヘッダーを付けられないので、後で blob の URL に差し替える
-const CLIENT_SECRET = "";  // 同じクライアントのシークレット。ページから見えるが、それだけでは Drive を読めない（本人の許可が要る）。手順は SETUP_iphone.md
+const CLIENT_SECRET = "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";  // 同じクライアントのシークレット。ページから見えるが、それだけでは Drive を読めない（本人の許可が要る）。手順は SETUP_iphone.md
 const SCOPE = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file";  // drive.file は論文を追加する（inbox に書く）ため
 const REDIRECT = location.origin + location.pathname.replace(/index\.html$/, "");  // Google Cloud の「承認済みのリダイレクト URI」と1文字も違わないこと
 let token = null, viewerDir = null;

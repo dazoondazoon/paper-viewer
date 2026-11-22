@@ -131,9 +131,6 @@ body.lib #app { grid-template-columns: 1fr; grid-template-areas: "text"; }
   body.figfull #figtabs { display: flex; }
   body.lib #app { grid-template-rows: 1fr; }
 }
-.login { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; align-items: center; justify-content: center; }
-.login div { max-width: 420px; padding: 0 16px; text-align: center; font-family: var(--sans); line-height: 1.7; }
-.login button { height: 40px; padding: 0 18px; margin-top: 8px; }
 .library form.find { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
 .library form.find input { flex: 1; min-width: 0; height: 36px; padding: 0 8px; font-size: 16px; }  /* 16px 未満だと iPhone が入力時に拡大する */
 .library form.find > button { height: 36px; padding: 0 12px; }
