@@ -1,5 +1,9 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
+// Google のログインから戻ったとき：?code= を受け取り、ログイン前の ?p=… に戻す（state に入れておいた）
+const authBack = new URLSearchParams(location.search);
+let authCode = authBack.get("code"), authError = authBack.get("error");
+if (authCode || authError) history.replaceState(null, "", location.pathname + (authBack.get("state") || ""));
 const params = new URLSearchParams(location.search);
 const paperId = params.get("p");
 const store = {
@@ -27,32 +31,42 @@ const CLIENT_ID = "864436920728-1mlldj31a498l8hkbnaaglumsb63gj6u.apps.googleuser
 const ON_DRIVE = location.protocol !== "file:";
 const API = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_SRC = "data:,drive:";  // 図の src に入れる仮の値。<img> には認証ヘッダーを付けられないので、後で blob の URL に差し替える
+const CLIENT_SECRET = "";  // 同じクライアントのシークレット。ページから見えるが、それだけでは Drive を読めない（本人の許可が要る）。手順は SETUP_iphone.md
+const SCOPE = "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file";  // drive.file は論文を追加する（inbox に書く）ため
+const REDIRECT = location.origin + location.pathname.replace(/index\.html$/, "");  // Google Cloud の「承認済みのリダイレクト URI」と1文字も違わないこと
 let token = null, viewerDir = null;
-// localStorage に置くのは、タブを閉じたりホーム画面から開き直したりしても1時間はログインし直さずに済むようにするため
-try { const t = JSON.parse(localStorage.getItem("token")); if (t && t.exp > Date.now()) token = t.v; } catch { /* 無ければログインし直す */ }
+// localStorage に置くのは、タブを閉じたりホーム画面から開き直したりしても1時間は取り直さずに済むようにするため
+try { const t = JSON.parse(localStorage.getItem("token")); if (t && t.exp > Date.now()) token = t.v; } catch { /* 無ければ取り直す */ }
+
+async function getToken(body) {
+  const r = await fetch("https://oauth2.googleapis.com/token", { method: "POST", body: new URLSearchParams({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, ...body }) });
+  const j = await r.json();
+  if (!r.ok) throw Object.assign(new Error("ログインできません：" + (j.error_description || j.error)), { code: j.error });
+  token = j.access_token;
+  try {
+    localStorage.setItem("token", JSON.stringify({ v: token, exp: Date.now() + (j.expires_in - 60) * 1000 }));
+    if (j.refresh_token) localStorage.setItem("refresh", j.refresh_token);
+  } catch { /* 次に開いたときにもう一度ログイン */ }
+}
 
 let loggingIn = null;
 function login() {
-  // 図の読み込みの途中でトークンが切れても本文を消さないよう、本文の上に重ねて出す。同時に何件切れても窓は1つ
-  return loggingIn || (loggingIn = new Promise((ok, ng) => {
-    const box = document.createElement("div");
-    box.className = "login";
-    box.innerHTML = `<div><p>Drive の論文を読むには、Papers のある Google アカウントでログインしてください。</p><button>Google でログイン</button></div>`;
-    document.body.appendChild(box);
-    // iPhone ではログインの窓はタップからしか開けないので、トークンが切れたときもボタンを押してもらう
-    box.querySelector("button").onclick = () => google.accounts.oauth2.initTokenClient({
-      // drive.file は論文を追加する（inbox に書く）ため。拡張と同じプロジェクトなので、拡張が作った Papers/inbox に書ける
-      // prompt を空にすると、一度許可したアカウントではアカウント選びと許可の画面を飛ばし、窓がすぐ閉じる
-      prompt: "", client_id: CLIENT_ID, scope: "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file",
-      callback: (r) => {
-        box.remove(); loggingIn = null;
-        if (r.error) return ng(new Error("ログインできません：" + r.error));
-        token = r.access_token;
-        try { localStorage.setItem("token", JSON.stringify({ v: token, exp: Date.now() + (r.expires_in - 60) * 1000 })); } catch { /* 次のページでもう一度ログイン */ }
-        ok();
-      },
-    }).requestAccessToken();
-  }));
+  // 図の読み込みの途中で同時に何件切れても、取り直すのは1回
+  return loggingIn || (loggingIn = (async () => {
+    if (authError) { const e = authError; authError = null; throw new Error("ログインできません：" + e); }
+    if (authCode) { const code = authCode; authCode = null; return getToken({ grant_type: "authorization_code", code, redirect_uri: REDIRECT }); }  // 一度しか使えない
+    let refresh = null;
+    try { refresh = localStorage.getItem("refresh"); } catch { /* 無ければログインの画面へ */ }
+    if (refresh) {
+      // 1時間で切れるアクセス トークンを、画面を出さずに取り直す。ボタンを要らなくするため
+      try { return await getToken({ grant_type: "refresh_token", refresh_token: refresh }); }
+      catch (e) { if (e.code !== "invalid_grant") throw e; try { localStorage.removeItem("refresh"); } catch { /* 無視 */ } }  // 取り消された・半年使わなかった
+    }
+    // 窓ではなくページごと移るので、iPhone でもタップ無しで開ける。prompt=consent は、更新用の鍵を確実にもらうため（最初の1回だけ）
+    location.href = "https://accounts.google.com/o/oauth2/v2/auth?" + new URLSearchParams({ client_id: CLIENT_ID, redirect_uri: REDIRECT,
+      response_type: "code", scope: SCOPE, access_type: "offline", prompt: "consent", state: location.search });
+    return new Promise(() => {});  // 移る間に続きを動かさない
+  })().finally(() => { loggingIn = null; }));
 }
 
 async function drive(url, opts = {}, retry = true) {
@@ -373,7 +387,6 @@ function markText(el) {
 
 async function main() {
   try {
-    if (ON_DRIVE) await loadScript("https://accounts.google.com/gsi/client");
     if (!paperId) {
       const items = (await load(null, "library.js", "LIBRARY")).data || [];
       // 保存待ちの一覧は自宅PCが mac_wait の論文があるときに書く。まだ一度も書かれていなければ無い
