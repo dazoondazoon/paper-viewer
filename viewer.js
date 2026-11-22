@@ -18,7 +18,7 @@ function loadScript(src) {
 }
 
 // ---------- Drive 版：http(s) で開いたとき（GitHub Pages）は、Drive の Papers/viewer を API で読む ----------
-const CLIENT_ID = "";  // Google Cloud の OAuth クライアント（ウェブ アプリケーション）の ID。手順は SETUP_iphone.md
+const CLIENT_ID = "864436920728-1mlldj31a498l8hkbnaaglumsb63gj6u.apps.googleusercontent.com";  // Google Cloud の OAuth クライアント（ウェブ アプリケーション）の ID。手順は SETUP_iphone.md
 const ON_DRIVE = location.protocol !== "file:";
 const API = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_SRC = "data:,drive:";  // 図の src に入れる仮の値。<img> には認証ヘッダーを付けられないので、後で blob の URL に差し替える
