@@ -66,7 +66,7 @@ async function drive(url) {
 async function files(q) {
   let out = [], page = "";
   do {
-    const r = await (await drive(`${API}?pageSize=1000&fields=nextPageToken,files(id,name)&q=${encodeURIComponent(q + " and trashed=false")}${page && "&pageToken=" + page}`)).json();
+    const r = await (await drive(`${API}?pageSize=1000&fields=nextPageToken,files(id,name,size)&q=${encodeURIComponent(q + " and trashed=false")}${page && "&pageToken=" + page}`)).json();
     out = out.concat(r.files); page = r.nextPageToken;
   } while (page);
   return out;
@@ -96,8 +96,8 @@ async function load(dir, file, name) {
   return { data: window[name] };
 }
 
-// 仮の src の付いた図・動画が画面に入ったら、Drive から取って差し替える。一覧の縮小画像は見えたものから取る
-const blobs = new Map();
+// 仮の src の付いた図・動画が画面に入ったら、Drive から取って差し替える（図は開いたときに裏ですべて取ってあるので、取り終えていればすぐ出る）
+const blobs = new Map(), sizes = {};
 function blobUrl(id) {
   if (!blobs.has(id)) blobs.set(id, drive(`${API}/${id}?alt=media`).then((r) => r.blob()).then((b) => URL.createObjectURL(b)));
   return blobs.get(id);
@@ -107,8 +107,20 @@ function swap(el) {
     const v = el.getAttribute(a);
     if (!v || !v.startsWith(DRIVE_SRC)) continue;
     el.removeAttribute(a);
+    if (el.tagName === "VIDEO" && a === "src") { holdVideo(el, v.slice(DRIVE_SRC.length)); continue; }
     blobUrl(v.slice(DRIVE_SRC.length)).then((u) => el.setAttribute(a, u), () => { el.alt = "図を読めません"; });
   }
+}
+// 動画は1本 1〜9MB あり、図の欄に出ただけで全部を取ると iPhone の回線では重いので、押されてから取る（blob なので途中から再生はできない）
+function holdVideo(el, id) {
+  const b = document.createElement("button");
+  b.className = "vload";
+  b.textContent = `▶ 動画を読み込む${sizes[id] ? `（${(sizes[id] / 1e6).toFixed(1)} MB）` : ""}`;
+  b.onclick = () => {
+    b.textContent = "読み込み中…"; b.disabled = true;
+    blobUrl(id).then((u) => { el.src = u; b.remove(); }, () => { b.textContent = "動画を読めません"; });
+  };
+  el.after(b);
 }
 const lazy = new IntersectionObserver((ents) => ents.forEach((e) => { if (e.isIntersecting) { lazy.unobserve(e.target); swap(e.target); } }));
 if (ON_DRIVE) new MutationObserver((ms) => {
@@ -122,8 +134,12 @@ if (ON_DRIVE) new MutationObserver((ms) => {
 }).observe(document.body, { childList: true, subtree: true });
 async function driveFigs(dir) {
   const ids = {};
-  for (const f of await files(`${quote(await child("figures", dir))} in parents`)) ids["figures/" + f.name] = f.id;
+  for (const f of await files(`${quote(await child("figures", dir))} in parents`)) { ids["figures/" + f.name] = f.id; sizes[f.id] = +f.size; }
   figs.forEach((f) => { if (ids[f.img]) f.src = DRIVE_SRC + ids[f.img]; if (ids[f.video]) f.vsrc = DRIVE_SRC + ids[f.video]; });
+  // 図（動画は表紙だけ）は、読み進めて出るのを待たずに論文の順にすべて取る。同時は3本までにして、いま図の欄に出す1枚の取得が後ろで待たされないようにする
+  const queue = figs.filter((f) => f.src).map((f) => f.src.slice(DRIVE_SRC.length));
+  const worker = async () => { while (queue.length) await blobUrl(queue.shift()).catch(() => {}); };
+  for (let i = 0; i < 3; i++) worker();
 }
 
 let P, figs = [], list = [], cur = 0, filter = "all";
