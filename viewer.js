@@ -28,7 +28,8 @@ const ON_DRIVE = location.protocol !== "file:";
 const API = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_SRC = "data:,drive:";  // 図の src に入れる仮の値。<img> には認証ヘッダーを付けられないので、後で blob の URL に差し替える
 let token = null, viewerDir = null;
-try { const t = JSON.parse(sessionStorage.getItem("token")); if (t && t.exp > Date.now()) token = t.v; } catch { /* 無ければログインし直す */ }
+// localStorage に置くのは、タブを閉じたりホーム画面から開き直したりしても1時間はログインし直さずに済むようにするため
+try { const t = JSON.parse(localStorage.getItem("token")); if (t && t.exp > Date.now()) token = t.v; } catch { /* 無ければログインし直す */ }
 
 let loggingIn = null;
 function login() {
@@ -41,12 +42,13 @@ function login() {
     // iPhone ではログインの窓はタップからしか開けないので、トークンが切れたときもボタンを押してもらう
     box.querySelector("button").onclick = () => google.accounts.oauth2.initTokenClient({
       // drive.file は論文を追加する（inbox に書く）ため。拡張と同じプロジェクトなので、拡張が作った Papers/inbox に書ける
-      client_id: CLIENT_ID, scope: "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file",
+      // prompt を空にすると、一度許可したアカウントではアカウント選びと許可の画面を飛ばし、窓がすぐ閉じる
+      prompt: "", client_id: CLIENT_ID, scope: "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file",
       callback: (r) => {
         box.remove(); loggingIn = null;
         if (r.error) return ng(new Error("ログインできません：" + r.error));
         token = r.access_token;
-        try { sessionStorage.setItem("token", JSON.stringify({ v: token, exp: Date.now() + (r.expires_in - 60) * 1000 })); } catch { /* 次のページでもう一度ログイン */ }
+        try { localStorage.setItem("token", JSON.stringify({ v: token, exp: Date.now() + (r.expires_in - 60) * 1000 })); } catch { /* 次のページでもう一度ログイン */ }
         ok();
       },
     }).requestAccessToken();
@@ -60,7 +62,7 @@ async function drive(url, opts = {}, retry = true) {
   // 401 は1時間でトークンが切れた。403 の insufficient は drive.file を足す前のトークンで書こうとした
   if (r.status === 401 || r.status === 403 && /insufficient/i.test(text) && retry) {
     token = null;
-    try { sessionStorage.removeItem("token"); } catch { /* 無視 */ }
+    try { localStorage.removeItem("token"); } catch { /* 無視 */ }
     return drive(url, opts, r.status === 401);
   }
   if (!r.ok) throw new Error(`Drive API ${r.status}：${text}`);
