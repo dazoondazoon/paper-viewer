@@ -155,6 +155,7 @@ async function driveFigs(dir) {
   const ids = {};
   for (const f of await files(`${quote(await child("figures", dir))} in parents`)) { ids["figures/" + f.name] = f.id; sizes[f.id] = +f.size; }
   figs.forEach((f) => { if (ids[f.img]) f.src = DRIVE_SRC + ids[f.img]; if (ids[f.video]) f.vsrc = DRIVE_SRC + ids[f.video]; });
+  P.blocks.forEach((b) => { if (ids[b.img]) b.src = DRIVE_SRC + ids[b.img]; });  // 画像の数式
   if ((P.supp || []).some((s) => s.file)) for (const f of await files(`${quote(await child("supp", dir))} in parents`)) suppIds["supp/" + f.name] = f.id;
   // 図（動画は表紙だけ）は、読み進めて出るのを待たずに論文の順にすべて取る。同時は3本までにして、いま図の欄に出す1枚の取得が後ろで待たされないようにする
   const queue = figs.filter((f) => f.src).map((f) => f.src.slice(DRIVE_SRC.length));
@@ -433,6 +434,7 @@ async function main() {
     else {
       const base = encodeURIComponent(paperId) + "/";
       figs.forEach((f) => { if (f.img) f.src = base + f.img; if (f.video) f.vsrc = base + f.video; });
+      P.blocks.forEach((b) => { if (b.img) b.src = base + b.img; });
     }
   } catch (e) { $("#text").textContent = e.message; return; }
   document.title = strip(P.meta.title_ja || P.meta.title_en);
@@ -482,27 +484,63 @@ function renderLibrary(items, waiting) {
       <div class="s">${w.need === "pdf" ? "Mac で PDF の保存が必要（3誌以外の雑誌）" : "Mac で保存が必要（購読の論文）"}：<a href="https://doi.org/${esc(w.doi)}" target="_blank" rel="noopener">論文を開く</a> → 拡張の「このページを保存」</div></div>`);
   }
   box.insertAdjacentHTML("beforeend", `<div class="tools"><input type="search" placeholder="一覧を絞り込む（題名・著者・雑誌・年）" autocapitalize="off" autocorrect="off">
-    ${sortSelect(LIB_SORT, LIB_SORT[store.get("libSort", "new")] ? store.get("libSort", "new") : "new")}</div><div class="list"></div>`);
+    ${sortSelect(LIB_SORT, LIB_SORT[store.get("libSort", "new")] ? store.get("libSort", "new") : "new")}
+    <select class="mkfilter"><option value="">マーカー：すべて</option><option value="none">マーカーなし</option>${Object.entries(MARKS).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select></div><div class="list"></div>`);
   const rows = items.map((it) => {
     const a = document.createElement("a");
     a.className = "item"; a.href = "?p=" + encodeURIComponent(it.id);
     a.innerHTML = `<div class="t">${it.title_ja || it.title_en}</div>
-      <div class="s">${it.authors.join(", ")} — ${it.journal} ${it.year} ・ 図 ${it.n_figs} ・ 翻訳 ${Math.round(it.translated * 100)}%</div>`;
+      <div class="s">${it.authors.join(", ")} — ${it.journal} ${it.year} ・ 図 ${it.n_figs} ・ 翻訳 ${Math.round(it.translated * 100)}%</div><div class="mk"></div>`;
+    const mk = a.querySelector(".mk");
+    const draw = () => {
+      mk.innerHTML = Object.entries(MARKS).filter(([k]) => markOpen.has(it.id) || hasMark(it, k)).map(([k, l]) => `<button type="button" data-k="${k}" class="${hasMark(it, k) ? "on" : ""}">${l}</button>`).join("")
+        + `<button type="button" data-open class="edit">${markOpen.has(it.id) ? "閉じる" : "マーカー"}</button>`;
+    };
+    // 行全体が論文へのリンクなので、マーカーの操作ではリンクを開かない
+    mk.onclick = (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      e.preventDefault();
+      if (b.dataset.open !== undefined) markOpen.has(it.id) ? markOpen.delete(it.id) : markOpen.add(it.id);
+      else toggleMark(it, b.dataset.k);
+      draw();
+      // 並べ方・絞り込みがマーカーに関わるときだけ並べ直す（そうでないと押した行が動く）
+      if (/^mark|^none$/.test(sel.value) || mkSel.value) paint();
+    };
+    draw();
     return { it, a, hay: [strip(it.title_ja || ""), strip(it.title_en), ...it.authors, it.journal, it.year].join(" ").toLowerCase() };
   });
-  const list = box.querySelector(".list"), narrow = box.querySelector(".tools input"), sel = box.querySelector(".tools select");
+  const list = box.querySelector(".list"), narrow = box.querySelector(".tools input"), sel = box.querySelector(".tools select.sort"), mkSel = box.querySelector(".mkfilter");
   const paint = () => {
     const ws = narrow.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const shown = rows.filter((r) => ws.every((w) => r.hay.includes(w))).sort((a, b) => LIB_SORT[sel.value][1](a.it, b.it));
+    const okMark = (it) => !mkSel.value || (mkSel.value === "none" ? !hasMark(it) : hasMark(it, mkSel.value));
+    const shown = rows.filter((r) => okMark(r.it) && ws.every((w) => r.hay.includes(w))).sort((a, b) => LIB_SORT[sel.value][1](a.it, b.it));
     list.replaceChildren(...shown.map((r) => r.a));
     $("#bar-title").textContent = `論文一覧（${ws.length ? shown.length + " / " : ""}${items.length} 本）`;
   };
   narrow.oninput = paint;
   sel.onchange = () => { store.set("libSort", sel.value); paint(); };
+  mkSel.onchange = paint;
   paint();
   $("#text").appendChild(box);
 }
+// マーカーは、この端末のブラウザ（localStorage）に論文ID → マーカー名の一覧で持つ。端末をまたいでは共有されない
+const MARKS = { unread: "未読", reading: "読書中", read: "読了", star: "重要", later: "あとで読む", check: "要確認" };
+let marks = store.get("marks", {});
+const markOpen = new Set();  // マーカーの選択欄を開いている論文
+const hasMark = (it, k) => { const m = marks[it.id] || []; return k ? m.includes(k) : m.length > 0; };
+function toggleMark(it, k) {
+  const m = new Set(marks[it.id] || []);
+  m.has(k) ? m.delete(k) : m.add(k);
+  if (m.size) marks[it.id] = [...m]; else delete marks[it.id];
+  store.set("marks", marks);
+}
+const byAdded = (a, b) => (b.added_at || "").localeCompare(a.added_at || "");
 const LIB_SORT = {
+  added_new: ["追加が新しい順", byAdded],
+  added_old: ["追加が古い順", (a, b) => -byAdded(a, b)],
+  mark_first: ["マーカーありを先に", (a, b) => hasMark(b) - hasMark(a) || byAdded(a, b)],
+  mark_last: ["マーカーなしを先に", (a, b) => hasMark(a) - hasMark(b) || byAdded(a, b)],
   new: ["年が新しい順", (a, b) => b.year - a.year],
   old: ["年が古い順", (a, b) => a.year - b.year],
   title: ["題名の順", byText((it) => strip(it.title_ja || it.title_en))],
@@ -541,6 +579,7 @@ function renderText() {
     } else {
       el = document.createElement("div");
       el.textContent = b.en;
+      if (b.src) { el.className = "formula"; el.insertAdjacentHTML("afterbegin", `<img alt="数式" src="${b.src}"> `); }
     }
     el.id = b.id;
     art.appendChild(el);

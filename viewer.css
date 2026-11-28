@@ -150,3 +150,13 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
 .library .tools input { flex: 1; min-width: 0; height: 36px; padding: 0 8px; font-size: 16px; }
 .library select.sort { height: 36px; font-size: 16px; max-width: 100%; }  /* 16px 未満だと iPhone が選ぶときに拡大する */
 .library form.find .sum select.sort { height: 30px; margin-left: 4px; }
+.library .tools { flex-wrap: wrap; }
+.library .tools select { height: 36px; font-size: 16px; }
+.library .mk { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.library .mk button { height: auto; padding: 2px 9px; font-size: 13px; border-radius: 12px; border: 1px solid var(--line); background: none; color: var(--muted); }
+.library .mk button.on { background: var(--mark); color: var(--fg); border-color: var(--fg); }
+.library .mk button.edit { border-style: dashed; }
+
+/* 出版社の数式の画像は透明な地に黒い文字なので、暗い画面でも読めるよう白い地を敷く */
+article .formula { margin: 1em 0; text-align: center; overflow-x: auto; }
+article .formula img { max-width: 100%; background: #fff; vertical-align: middle; }
