@@ -481,7 +481,7 @@ function renderLibrary(items, waiting) {
   }
   for (const w of waiting) {
     box.insertAdjacentHTML("beforeend", `<div class="item wait"><div class="t">${esc(w.title || w.doi)}</div>
-      <div class="s">${w.need === "pdf" ? "Mac で PDF の保存が必要（3誌以外の雑誌）" : "Mac で保存が必要（購読の論文）"}：<a href="https://doi.org/${esc(w.doi)}" target="_blank" rel="noopener">論文を開く</a> → 拡張の「このページを保存」</div></div>`);
+      <div class="s">${w.need === "pdf" ? "Mac で PDF の保存が必要" : "Mac で保存が必要"}：<a href="https://doi.org/${esc(w.doi)}" target="_blank" rel="noopener">論文を開く</a> → ${w.need === "pdf" ? "PDF をダウンロードし、拡張の「PDF ファイルから保存」" : "拡張の「このページを保存」"}</div></div>`);
   }
   box.insertAdjacentHTML("beforeend", `<div class="tools"><input type="search" placeholder="一覧を絞り込む（題名・著者・雑誌・年）" autocapitalize="off" autocorrect="off">
     ${sortSelect(LIB_SORT, LIB_SORT[store.get("libSort", "new")] ? store.get("libSort", "new") : "new")}
